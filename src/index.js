@@ -6,6 +6,7 @@ import bodyParser from "body-parser";
 import { RoomServiceClient, AccessToken } from "livekit-server-sdk";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import axios from "axios";
+import cron from "node-cron";
 
 dotenv.config();
 
@@ -143,6 +144,17 @@ app.post("/api/send-message", async (req, res) => {
 
 app.get("/", (req, res) => {
   res.send("Welcome to the AI Chat API!");
+});
+
+// 🕒 Cron Job: Hit welcome API every 2 minutes
+cron.schedule("*/1 * * * *", async () => {
+  try {
+    console.log("🚀 Cron Job Running: Hitting welcome API");
+    const response = await axios.get(`http://localhost:${PORT}/`);
+    console.log("✅ Cron Response:", response.data);
+  } catch (error) {
+    console.error("❌ Cron Job Error:", error.message);
+  }
 });
 
 server.listen(PORT, () => {

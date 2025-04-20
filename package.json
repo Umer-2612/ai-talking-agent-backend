@@ -22,7 +22,11 @@
     "http": "^0.0.1-security",
     "livekit-client": "^2.11.2",
     "livekit-server-sdk": "^2.12.0",
+    "node-cron": "^3.0.3",
     "nodemon": "^3.1.9",
     "openai": "^4.95.1"
+  },
+  "devDependencies": {
+    "@types/node-cron": "^3.0.11"
   }
 }
