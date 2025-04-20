@@ -25,10 +25,6 @@ const liveKitConfig = {
   apiSecret: process.env.LIVEKIT_API_SECRET,
   projectUrl: process.env.LIVEKIT_HTTP_URL,
 };
-console.log({ aa: process.env });
-
-const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY; // Get your ElevenLabs API key here
-console.log({ key: process.env.ELEVENLABS_API_KEY });
 
 // Gemini AI config
 const gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -46,11 +42,7 @@ async function getAIResponse(userInput) {
   try {
     console.log("📩 User input to AI:", userInput);
     const result = await model.generateContent(
-      `Reply in short to the user: ${userInput}`,
-      {
-        temperature: 0.5,
-        maxOutputTokens: 100,
-      }
+      `Reply in short to the user: ${userInput}`
     );
     const response = result.response;
     const text = response.text();
@@ -66,7 +58,6 @@ async function getAIResponse(userInput) {
 async function generateAudioResponse(text) {
   try {
     const voiceId = "DMyrgzQFny3JI1Y1paM5"; // Set voice ID, update with any voice you want
-    console.log({ bb: elevenLabsApiKey });
 
     const response = await axios.post(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
@@ -75,7 +66,7 @@ async function generateAudioResponse(text) {
       },
       {
         headers: {
-          "xi-api-key": elevenLabsApiKey, // Use your ElevenLabs API Key here
+          "xi-api-key": process.env.ELEVENLABS_API_KEY, // Use your ElevenLabs API Key here
           "Content-Type": "application/json", // Ensure the content type is correct
         },
         responseType: "arraybuffer", // Audio in binary format
