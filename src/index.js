@@ -141,6 +141,10 @@ app.post("/api/send-message", async (req, res) => {
   }
 });
 
+app.get("/", (req, res) => {
+  res.send("Welcome to the AI Chat API!");
+});
+
 server.listen(PORT, () => {
   console.log(`✅ Backend running at http://localhost:${PORT}`);
 });
