@@ -84,7 +84,7 @@ async function generateAudioResponse(text) {
 
     return response.data; // Return audio data
   } catch (error) {
-    console.error("❌ Error generating audio:", error.message);
+    console.error("❌ Error generating audio:", error);
     return null;
   }
 }
