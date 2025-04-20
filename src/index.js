@@ -43,7 +43,13 @@ const client = new RoomServiceClient(
 async function getAIResponse(userInput) {
   try {
     console.log("📩 User input to AI:", userInput);
-    const result = await model.generateContent(userInput);
+    const result = await model.generateContent(
+      `Reply in short to the user: ${userInput}`,
+      {
+        temperature: 0.5,
+        maxOutputTokens: 100,
+      }
+    );
     const response = result.response;
     const text = response.text();
     console.log("🤖 AI Response:", text);
