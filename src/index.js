@@ -25,8 +25,10 @@ const liveKitConfig = {
   apiSecret: process.env.LIVEKIT_API_SECRET,
   projectUrl: process.env.LIVEKIT_HTTP_URL,
 };
+console.log({ aa: process.env });
 
 const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY; // Get your ElevenLabs API key here
+console.log({ key: process.env.ELEVENLABS_API_KEY });
 
 // Gemini AI config
 const gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -64,6 +66,7 @@ async function getAIResponse(userInput) {
 async function generateAudioResponse(text) {
   try {
     const voiceId = "DMyrgzQFny3JI1Y1paM5"; // Set voice ID, update with any voice you want
+    console.log({ bb: elevenLabsApiKey });
 
     const response = await axios.post(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
@@ -78,11 +81,10 @@ async function generateAudioResponse(text) {
         responseType: "arraybuffer", // Audio in binary format
       }
     );
-    ``;
 
     return response.data; // Return audio data
   } catch (error) {
-    console.error("❌ Error generating audio:", error);
+    console.error("❌ Error generating audio:", error.message);
     return null;
   }
 }
