@@ -6,7 +6,9 @@ import bodyParser from "body-parser";
 import { RoomServiceClient, AccessToken } from "livekit-server-sdk";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import axios from "axios";
-import cron from "node-cron";
+import multer from "multer";
+import { Readable } from "stream";
+// import cron from "node-cron";
 
 dotenv.config();
 
@@ -15,8 +17,12 @@ const server = createServer(app);
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json({ limit: "50mb" }));
+app.use(bodyParser.urlencoded({ extended: true, limit: "50mb" }));
+
+// Set up multer for handling file uploads
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
 // LiveKit config
 const liveKitConfig = {
@@ -145,14 +151,121 @@ app.get("/", (req, res) => {
   res.send("Welcome to the AI Chat API!");
 });
 
-// 🕒 Cron Job: Hit welcome API every 2 minutes
-cron.schedule("*/1 * * * *", async () => {
+// 🎙️ Transcribe audio to text using AssemblyAI
+async function transcribeAudio(audioBuffer) {
   try {
-    console.log("🚀 Cron Job Running: Hitting welcome API");
-    const response = await axios.get(`http://localhost:${PORT}/`);
-    console.log("✅ Cron Response:", response.data);
+    console.log("🎙️ Sending audio to AssemblyAI for transcription...");
+    // 1. Upload audio file to AssemblyAI
+    const uploadRes = await axios.post(
+      "https://api.assemblyai.com/v2/upload",
+      audioBuffer,
+      {
+        headers: {
+          authorization: process.env.ASSEMBLY_API_KEY,
+          "content-type": "application/octet-stream",
+        },
+      }
+    );
+    const uploadUrl = uploadRes.data.upload_url;
+    // 2. Request transcription
+    const transcriptRes = await axios.post(
+      "https://api.assemblyai.com/v2/transcript",
+      {
+        audio_url: uploadUrl,
+        language_code: "en",
+        punctuate: true,
+        format_text: true,
+      },
+      {
+        headers: {
+          authorization: process.env.ASSEMBLY_API_KEY,
+          "content-type": "application/json",
+        },
+      }
+    );
+    const transcriptId = transcriptRes.data.id;
+    // 3. Poll for completion
+    let transcript = "";
+    let status = transcriptRes.data.status;
+    let pollCount = 0;
+    while (status !== "completed" && status !== "failed" && pollCount < 60) {
+      await new Promise((res) => setTimeout(res, 2000));
+      const pollRes = await axios.get(
+        `https://api.assemblyai.com/v2/transcript/${transcriptId}`,
+        {
+          headers: { authorization: process.env.ASSEMBLY_API_KEY },
+        }
+      );
+      status = pollRes.data.status;
+      if (status === "completed") {
+        transcript = pollRes.data.text;
+      }
+      pollCount++;
+    }
+    if (!transcript) {
+      throw new Error("Transcription failed or timed out");
+    }
+    console.log("🎙️ AssemblyAI transcription complete:", transcript);
+    return transcript;
   } catch (error) {
-    console.error("❌ Cron Job Error:", error.message);
+    console.error(
+      "❌ Error with AssemblyAI transcription:",
+      error.response?.data || error.message
+    );
+    return "";
+  }
+}
+
+/**
+ * 🎤🎧 API: Audio message → Transcribe → AI → Audio Response
+ */
+app.post("/api/audio-message", upload.single("audio"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No audio file provided" });
+    }
+
+    console.log(
+      "📩 Received audio file:",
+      req.file.originalname,
+      "Size:",
+      req.file.size
+    );
+
+    // 1. Transcribe the audio to text using AssemblyAI
+    console.log("🎙️ Starting AssemblyAI transcription process...");
+    const transcribedText = await transcribeAudio(req.file.buffer);
+
+    if (!transcribedText) {
+      return res.status(400).json({ error: "Could not transcribe audio" });
+    }
+
+    console.log("🎙️ Transcribed text:", transcribedText);
+
+    // 2. Process transcribed text with Gemini AI
+    const aiResponse = await getAIResponse(transcribedText);
+    const trimmedResponse = aiResponse.trim();
+    console.log("🤖 AI response to audio:", trimmedResponse);
+
+    // 3. Generate audio response using ElevenLabs TTS
+    const audioData = await generateAudioResponse(trimmedResponse);
+
+    if (audioData) {
+      res.status(200).json({
+        transcribedText,
+        response: trimmedResponse,
+        audio: audioData.toString("base64"), // Audio data as base64
+        role: "AI",
+      });
+    } else {
+      res.status(500).json({ error: "Failed to generate audio response" });
+    }
+  } catch (error) {
+    console.error("❌ Error processing audio message:", error);
+    res.status(500).json({
+      error: "Failed to process audio message",
+      details: error.message,
+    });
   }
 });
 
