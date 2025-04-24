@@ -5,18 +5,20 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import { RoomServiceClient, AccessToken } from "livekit-server-sdk";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import axios from "axios";
 import multer from "multer";
-import { Readable } from "stream";
-// import cron from "node-cron";
+import { liveKitConfig, serverConfig, geminiConfig } from "./env.config.js";
 
 dotenv.config();
 
 const app = express();
 const server = createServer(app);
-const PORT = process.env.PORT || 3000;
+const PORT = serverConfig.port;
 
-app.use(cors());
+app.use(
+  cors({
+    origin: serverConfig.corsOrigin,
+  })
+);
 app.use(bodyParser.json({ limit: "50mb" }));
 app.use(bodyParser.urlencoded({ extended: true, limit: "50mb" }));
 
@@ -24,17 +26,9 @@ app.use(bodyParser.urlencoded({ extended: true, limit: "50mb" }));
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// LiveKit config
-const liveKitConfig = {
-  websocketUrl: process.env.LIVEKIT_WEBSOCKET_URL,
-  apiKey: process.env.LIVEKIT_API_KEY,
-  apiSecret: process.env.LIVEKIT_API_SECRET,
-  projectUrl: process.env.LIVEKIT_HTTP_URL,
-};
-
 // Gemini AI config
-const gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = gemini.getGenerativeModel({ model: "gemini-1.5-pro" });
+const gemini = new GoogleGenerativeAI(geminiConfig.apiKey);
+export const model = gemini.getGenerativeModel({ model: "gemini-1.5-pro" });
 
 // Room client for LiveKit REST API
 const client = new RoomServiceClient(
@@ -42,49 +36,6 @@ const client = new RoomServiceClient(
   liveKitConfig.apiKey,
   liveKitConfig.apiSecret
 );
-
-// 🧠 AI Response
-async function getAIResponse(userInput) {
-  try {
-    console.log("📩 User input to AI:", userInput);
-    const result = await model.generateContent(
-      `Reply in short to the user: ${userInput}`
-    );
-    const response = result.response;
-    const text = response.text();
-    console.log("🤖 AI Response:", text);
-    return text;
-  } catch (error) {
-    console.error("❌ Error from Gemini:", error);
-    return "Sorry, I'm having trouble responding right now.";
-  }
-}
-
-// 🎤 Generate AI audio using ElevenLabs TTS
-async function generateAudioResponse(text) {
-  try {
-    const voiceId = "DMyrgzQFny3JI1Y1paM5"; // Set voice ID, update with any voice you want
-
-    const response = await axios.post(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
-      {
-        text,
-      },
-      {
-        headers: {
-          "xi-api-key": process.env.ELEVENLABS_API_KEY, // Use your ElevenLabs API Key here
-          "Content-Type": "application/json", // Ensure the content type is correct
-        },
-        responseType: "arraybuffer", // Audio in binary format
-      }
-    );
-
-    return response.data; // Return audio data
-  } catch (error) {
-    console.error("❌ Error generating audio:", error);
-    return null;
-  }
-}
 
 /**
  * 🎯 API: Create room & return token
@@ -147,75 +98,6 @@ app.post("/api/send-message", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => {
-  res.send("Welcome to the AI Chat API!");
-});
-
-// 🎙️ Transcribe audio to text using AssemblyAI
-async function transcribeAudio(audioBuffer) {
-  try {
-    console.log("🎙️ Sending audio to AssemblyAI for transcription...");
-    // 1. Upload audio file to AssemblyAI
-    const uploadRes = await axios.post(
-      "https://api.assemblyai.com/v2/upload",
-      audioBuffer,
-      {
-        headers: {
-          authorization: process.env.ASSEMBLY_API_KEY,
-          "content-type": "application/octet-stream",
-        },
-      }
-    );
-    const uploadUrl = uploadRes.data.upload_url;
-    // 2. Request transcription
-    const transcriptRes = await axios.post(
-      "https://api.assemblyai.com/v2/transcript",
-      {
-        audio_url: uploadUrl,
-        language_code: "en",
-        punctuate: true,
-        format_text: true,
-      },
-      {
-        headers: {
-          authorization: process.env.ASSEMBLY_API_KEY,
-          "content-type": "application/json",
-        },
-      }
-    );
-    const transcriptId = transcriptRes.data.id;
-    // 3. Poll for completion
-    let transcript = "";
-    let status = transcriptRes.data.status;
-    let pollCount = 0;
-    while (status !== "completed" && status !== "failed" && pollCount < 60) {
-      await new Promise((res) => setTimeout(res, 2000));
-      const pollRes = await axios.get(
-        `https://api.assemblyai.com/v2/transcript/${transcriptId}`,
-        {
-          headers: { authorization: process.env.ASSEMBLY_API_KEY },
-        }
-      );
-      status = pollRes.data.status;
-      if (status === "completed") {
-        transcript = pollRes.data.text;
-      }
-      pollCount++;
-    }
-    if (!transcript) {
-      throw new Error("Transcription failed or timed out");
-    }
-    console.log("🎙️ AssemblyAI transcription complete:", transcript);
-    return transcript;
-  } catch (error) {
-    console.error(
-      "❌ Error with AssemblyAI transcription:",
-      error.response?.data || error.message
-    );
-    return "";
-  }
-}
-
 /**
  * 🎤🎧 API: Audio message → Transcribe → AI → Audio Response
  */
@@ -267,6 +149,10 @@ app.post("/api/audio-message", upload.single("audio"), async (req, res) => {
       details: error.message,
     });
   }
+});
+
+app.get("/", (req, res) => {
+  res.send("Welcome to the AI Chat API!");
 });
 
 server.listen(PORT, () => {
