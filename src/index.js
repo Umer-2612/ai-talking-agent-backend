@@ -7,6 +7,11 @@ import { RoomServiceClient, AccessToken } from "livekit-server-sdk";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import multer from "multer";
 import { liveKitConfig, serverConfig, geminiConfig } from "./env.config.js";
+import {
+  getAIResponse,
+  generateAudioResponse,
+  transcribeAudio,
+} from "./aibot.js";
 
 dotenv.config();
 
@@ -124,9 +129,16 @@ app.post("/api/audio-message", upload.single("audio"), async (req, res) => {
 
     console.log("🎙️ Transcribed text:", transcribedText);
 
-    // 2. Process transcribed text with Gemini AI
-    const aiResponse = await getAIResponse(transcribedText);
-    const trimmedResponse = aiResponse.trim();
+    let trimmedResponse;
+
+    if (transcribedText === "Error with AssemblyAI transcription") {
+      trimmedResponse = "Error while processing audio";
+    } else {
+      // 2. Process transcribed text with Gemini AI
+      const aiResponse = await getAIResponse(transcribedText);
+      trimmedResponse = aiResponse.trim();
+    }
+
     console.log("🤖 AI response to audio:", trimmedResponse);
 
     // 3. Generate audio response using ElevenLabs TTS

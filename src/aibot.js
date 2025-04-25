@@ -1,6 +1,6 @@
 import axios from "axios";
 import { model } from "./index.js";
-import { assemblyConfig } from "./env.config.js";
+import { assemblyConfig, elevenLabsConfig } from "./env.config.js";
 
 // 🧠 AI Response
 export async function getAIResponse(userInput) {
@@ -104,6 +104,6 @@ export async function transcribeAudio(audioBuffer) {
       "❌ Error with AssemblyAI transcription:",
       error.response?.data || error.message
     );
-    return "";
+    return "Error with AssemblyAI transcription";
   }
 }
