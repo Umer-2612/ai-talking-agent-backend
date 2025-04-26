@@ -3,15 +3,18 @@ import { createServer } from "http";
 import dotenv from "dotenv";
 import cors from "cors";
 import bodyParser from "body-parser";
-import { RoomServiceClient, AccessToken } from "livekit-server-sdk";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import multer from "multer";
-import { liveKitConfig, serverConfig, geminiConfig } from "./env.config.js";
+import { serverConfig, geminiConfig } from "./env.config.js";
+import controller from "./controller.js";
+import { WebSocketServer } from "ws";
+import Vad from "node-vad";
 import {
-  getAIResponse,
   generateAudioResponse,
+  getAIResponse,
   transcribeAudio,
 } from "./aibot.js";
+import aiJobQueue from "./queue.js";
+import { pcmToWavBuffer } from "./pcmToWav.js";
 
 dotenv.config();
 
@@ -27,146 +30,160 @@ app.use(
 app.use(bodyParser.json({ limit: "50mb" }));
 app.use(bodyParser.urlencoded({ extended: true, limit: "50mb" }));
 
-// Set up multer for handling file uploads
-const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
-
 // Gemini AI config
 const gemini = new GoogleGenerativeAI(geminiConfig.apiKey);
 export const model = gemini.getGenerativeModel({ model: "gemini-1.5-pro" });
 
-// Room client for LiveKit REST API
-const client = new RoomServiceClient(
-  liveKitConfig.projectUrl,
-  liveKitConfig.apiKey,
-  liveKitConfig.apiSecret
-);
-
-/**
- * 🎯 API: Create room & return token
- */
-app.post("/api/create-room", async (req, res) => {
-  try {
-    const room = await client.createRoom({
-      name: `AI-Chat-${Date.now()}`,
-      emptyTimeout: 600,
-      maxParticipants: 10,
-    });
-
-    const at = new AccessToken(liveKitConfig.apiKey, liveKitConfig.apiSecret, {
-      identity: `User-${Math.floor(Math.random() * 1000)}`,
-    });
-    at.addGrant({ roomJoin: true, room: room.name });
-    const token = await at.toJwt();
-
-    res.status(200).json({
-      message: "Room created and token generated.",
-      token,
-      roomName: room.name,
-    });
-  } catch (error) {
-    console.error("❌ Error creating room:", error);
-    res.status(500).json({ error: "Failed to create room" });
-  }
-});
-
-/**
- * ✉️ API: User message → AI → Return response (not LiveKit broadcast anymore)
- */
-app.post("/api/send-message", async (req, res) => {
-  const { message } = req.body;
-  if (!message) {
-    return res.status(400).json({ error: "message is required" });
-  }
-
-  try {
-    const aiResponse = await getAIResponse(message);
-    const trimmedResponse = aiResponse.trim();
-
-    // Generate audio response using ElevenLabs TTS
-    const audioData = await generateAudioResponse(trimmedResponse);
-
-    if (audioData) {
-      // Here, you can send the audio data to the LiveKit room, either as a stream or via a broadcast.
-      // For simplicity, we will return the audio in the response.
-      res.status(200).json({
-        response: trimmedResponse,
-        role: "AI",
-        audio: audioData.toString("base64"), // Audio data as base64
-      });
-    } else {
-      res.status(500).json({ error: "Failed to generate audio" });
-    }
-  } catch (error) {
-    console.error("❌ AI error:", error);
-    res.status(500).json({ error: "AI failed to respond" });
-  }
-});
-
-/**
- * 🎤🎧 API: Audio message → Transcribe → AI → Audio Response
- */
-app.post("/api/audio-message", upload.single("audio"), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No audio file provided" });
-    }
-
-    console.log(
-      "📩 Received audio file:",
-      req.file.originalname,
-      "Size:",
-      req.file.size
-    );
-
-    // 1. Transcribe the audio to text using AssemblyAI
-    console.log("🎙️ Starting AssemblyAI transcription process...");
-    const transcribedText = await transcribeAudio(req.file.buffer);
-
-    if (!transcribedText) {
-      return res.status(400).json({ error: "Could not transcribe audio" });
-    }
-
-    console.log("🎙️ Transcribed text:", transcribedText);
-
-    let trimmedResponse;
-
-    if (transcribedText === "Error with AssemblyAI transcription") {
-      trimmedResponse = "Error while processing audio";
-    } else {
-      // 2. Process transcribed text with Gemini AI
-      const aiResponse = await getAIResponse(transcribedText);
-      trimmedResponse = aiResponse.trim();
-    }
-
-    console.log("🤖 AI response to audio:", trimmedResponse);
-
-    // 3. Generate audio response using ElevenLabs TTS
-    const audioData = await generateAudioResponse(trimmedResponse);
-
-    if (audioData) {
-      res.status(200).json({
-        transcribedText,
-        response: trimmedResponse,
-        audio: audioData.toString("base64"), // Audio data as base64
-        role: "AI",
-      });
-    } else {
-      res.status(500).json({ error: "Failed to generate audio response" });
-    }
-  } catch (error) {
-    console.error("❌ Error processing audio message:", error);
-    res.status(500).json({
-      error: "Failed to process audio message",
-      details: error.message,
-    });
-  }
-});
-
-app.get("/", (req, res) => {
-  res.send("Welcome to the AI Chat API!");
-});
+app.use(controller);
 
 server.listen(PORT, () => {
   console.log(`✅ Backend running at http://localhost:${PORT}`);
+
+  // Set up WebSocket server for audio
+  const wss = new WebSocketServer({ server, path: "/ws/audio" });
+  wss.on("connection", (ws) => {
+    console.log("🔗 New WebSocket connection established on /ws/audio");
+    let audioBuffer = Buffer.alloc(0);
+    let silenceStart = null;
+    const silenceTimeout = 300; // ms
+    const vad = new Vad(Vad.Mode.VERY_AGGRESSIVE);
+    let leftover = null; // For odd-length PCM chunks
+
+    // --- PCM streaming handler: expects raw PCM, mono, 16kHz, 16-bit LE ---
+    ws.on("message", async (message) => {
+      // message is expected to be a Buffer containing raw PCM data
+      console.log(`📩 [WebSocket] Received PCM chunk: ${message.length} bytes`);
+      // Handle leftover byte from previous chunk (for odd-length buffers)
+      if (leftover) {
+        message = Buffer.concat([leftover, message]);
+        leftover = null;
+      }
+      if (message.length % 2 !== 0) {
+        leftover = message.slice(message.length - 1);
+        message = message.slice(0, message.length - 1);
+      }
+      if (message.length === 0 || !message) {
+        console.log("[PCM] Received empty chunk, skipping.");
+        return;
+      }
+      audioBuffer = Buffer.concat([audioBuffer, message]);
+      try {
+        const result = await vad.processAudio(message, 16000);
+        console.log("[VAD] Result for chunk:", result);
+        if (result === Vad.Event.SILENCE) {
+          if (!silenceStart) silenceStart = Date.now();
+          if (Date.now() - silenceStart > silenceTimeout) {
+            const utteranceBuffer = audioBuffer;
+            audioBuffer = Buffer.alloc(0);
+            silenceStart = null;
+            aiJobQueue.enqueue(async () => {
+              const hasSpeech = await bufferContainsSpeech(
+                utteranceBuffer,
+                vad
+              );
+              if (hasSpeech) {
+                console.log(
+                  "✅ Speech detected in utterance buffer. Sending to analyse pipeline..."
+                );
+                // Convert to WAV before sending to AssemblyAI
+                const wavBuffer = pcmToWavBuffer(utteranceBuffer, 16000, 1);
+                try {
+                  ws.send(
+                    JSON.stringify({
+                      event_type: "disappear",
+                      message: "Speech detected. Transcribing...",
+                    })
+                  );
+                  const transcribedText = await transcribeAudio(wavBuffer);
+                  if (
+                    transcribedText === "Error with AssemblyAI transcription" ||
+                    !transcribedText
+                  ) {
+                    return;
+                  }
+                  console.log("🎙️ Transcribed text:", transcribedText);
+                  ws.send(
+                    JSON.stringify({
+                      event_type: "disappear",
+                      message: "Transcribed text now sending to Gemini AI...",
+                    })
+                  );
+                  const aiResponse = await getAIResponse(transcribedText);
+                  const trimmedResponse = aiResponse.trim();
+                  console.log("🤖 AI response to audio:", trimmedResponse);
+                  ws.send(
+                    JSON.stringify({
+                      event_type: "disappear",
+                      message: "AI response now sending to client...",
+                    })
+                  );
+                  const audioData = await generateAudioResponse(
+                    trimmedResponse
+                  );
+                  if (audioData) {
+                    ws.send(
+                      JSON.stringify({
+                        event_type: "final_response",
+                        userText: transcribedText,
+                        aiResponse: trimmedResponse,
+                        audio: Buffer.from(audioData).toString("base64"),
+                        role: "AI",
+                      })
+                    );
+                  } else {
+                    ws.send(
+                      JSON.stringify({
+                        error: "Failed to generate audio response",
+                      })
+                    );
+                  }
+                } catch (err) {
+                  console.error("Error in analyse pipeline:", err);
+                  ws.send(
+                    JSON.stringify({
+                      error: "Internal pipeline error",
+                      details: err.message,
+                    })
+                  );
+                }
+              } else {
+                console.log("❌ No valid speech detected in utterance buffer.");
+              }
+            });
+          }
+        } else {
+          silenceStart = null;
+        }
+      } catch (err) {
+        console.error("[VAD] Error:", err, { message });
+      }
+    });
+    ws.on("close", () => {
+      console.log("❌ WebSocket connection closed on /ws/audio");
+    });
+    ws.on("error", (err) => {
+      console.error("WebSocket error on /ws/audio:", err);
+    });
+  });
+  console.log(`🚀 WebSocket server listening at ws://localhost:${PORT}`);
 });
+
+async function bufferContainsSpeech(
+  buffer,
+  vad,
+  sampleRate = 16000,
+  frameMs = 30
+) {
+  const frameSize = ((sampleRate * frameMs) / 1000) * 2;
+  for (let i = 0; i + frameSize <= buffer.length; i += frameSize) {
+    const frame = buffer.slice(i, i + frameSize);
+    try {
+      const result = await vad.processAudio(frame, sampleRate);
+      console.log("[VAD] Result for frame:", result);
+      if (result === Vad.Event.VOICE) return true;
+    } catch (err) {
+      console.warn("[VAD] Error processing frame:", err);
+    }
+  }
+  return false;
+}

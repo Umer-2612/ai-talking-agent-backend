@@ -14,6 +14,9 @@ export async function getAIResponse(userInput) {
     console.log("🤖 AI Response:", text);
     return text;
   } catch (error) {
+    if (error.status === 429) {
+      return "Sorry, Gemini rate limit exceeded.";
+    }
     console.error("❌ Error from Gemini:", error);
     return "Sorry, I'm having trouble responding right now.";
   }
@@ -59,6 +62,7 @@ export async function transcribeAudio(audioBuffer) {
       }
     );
     const uploadUrl = uploadRes.data.upload_url;
+    console.log("AssemblyAI upload URL:", uploadUrl);
     // 2. Request transcription
     const transcriptRes = await axios.post(
       `${assemblyConfig.apiUrl}/transcript`,
@@ -76,6 +80,7 @@ export async function transcribeAudio(audioBuffer) {
       }
     );
     const transcriptId = transcriptRes.data.id;
+    console.log("AssemblyAI transcript ID:", transcriptId);
     // 3. Poll for completion
     let transcript = "";
     let status = transcriptRes.data.status;
